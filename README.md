@@ -1,11 +1,13 @@
 # IBM Cloud Pak for Data - Connector SDK
 
-This project allows developers to implement their own connectors to data sources that are not supported out-of-the-box by IBM® Cloud Pak for Data. SDK connectors are based on Apache Arrow Flight. The SDK is primarily designed for developing connectors in Java, but a connector could be developed in any language supported by Apache Arrow Flight provided that the connector adheres to the specification described by the SDK Guide.
+This fork adds the functionality of mocked batches. The server maintains a `VectorSchemaRoot` in memory to be able to return data instantaneously. The source interaction happens only upon changing the batch size, otherwise the same batch is transmitted.
 
-## Documentation
+Asset Descriptors added:
+ - `mock` - specifies if mocked batch functionality should be used,
+ - `batch_rep` - specifies the number of times the mocked batch should be returned. 
 
-* [SDK Guide](guide.md)
-* [Apache Arrow Flight](https://arrow.apache.org/docs/format/Flight.html)
+
+For documentation of other functionalities refer to the [SDK Guide](guide.md).
 
 ## License
 
