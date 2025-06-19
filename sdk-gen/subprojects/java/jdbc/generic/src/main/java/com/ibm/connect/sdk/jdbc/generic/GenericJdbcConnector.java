@@ -42,6 +42,7 @@ public class GenericJdbcConnector extends JdbcConnector
         DRIVER_CLASS_MAP.put("postgresql", org.postgresql.Driver.class);
         DRIVER_CLASS_MAP.put("snowflake", net.snowflake.client.jdbc.SnowflakeDriver.class);
         DRIVER_CLASS_MAP.put("sqlserver", com.microsoft.sqlserver.jdbc.SQLServerDriver.class);
+        DRIVER_CLASS_MAP.put("dummyjdbc", com.googlecode.dummyjdbc.DummyJdbcDriver.class);
     }
 
     private static final HashBasedTable<String, String, String> LIMIT_CLAUSE_TABLE = HashBasedTable.create();
@@ -56,6 +57,7 @@ public class GenericJdbcConnector extends JdbcConnector
         LIMIT_CLAUSE_TABLE.put("postgresql", "suffix", "LIMIT ${row_limit}");
         LIMIT_CLAUSE_TABLE.put("snowflake", "suffix", "LIMIT ${row_limit}");
         LIMIT_CLAUSE_TABLE.put("sqlserver", "prefix", "TOP ${row_limit}");
+        LIMIT_CLAUSE_TABLE.put("dummyjdbc", "suffix", "");
     }
 
     @SuppressWarnings("unchecked")

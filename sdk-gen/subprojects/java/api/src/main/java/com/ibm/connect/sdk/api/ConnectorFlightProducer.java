@@ -34,6 +34,7 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.VectorLoader;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.VectorUnloader;
+import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.slf4j.Logger;
 
@@ -108,6 +109,8 @@ public abstract class ConnectorFlightProducer implements FlightProducer
     private final ModelMapper modelMapper;
     private final FlightDescriptorCache descriptorCache;
     private final BufferAllocator rootAllocator;
+    private VectorSchemaRoot batch;
+    private int batchSize;
 
     /**
      * Constructs a flight producer for connectors.
@@ -132,7 +135,18 @@ public abstract class ConnectorFlightProducer implements FlightProducer
      * {@inheritDoc}
      */
     @Override
+    @SuppressWarnings("PMD.CloseResource")
     public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener)
+    {
+        final long startTime = System.nanoTime();
+        sourceOrMockStream(ticket, listener);
+        final long endTime = System.nanoTime();
+        final double durationInSeconds = (endTime - startTime) / 1_000_000_000.0;
+        LOGGER.info("GetStream duration: {} ", durationInSeconds);
+    }
+
+    //choose to either perform interaction with source or use a preloaded mocked batch
+    public void sourceOrMockStream(Ticket ticket, ServerStreamListener listener)
     {
         final BackpressureStrategy bpStrategy = new CallbackBackpressureStrategy();
         bpStrategy.register(listener);
@@ -142,8 +156,9 @@ public abstract class ConnectorFlightProducer implements FlightProducer
                 throw new IllegalArgumentException("No flight descriptor available for the given ticket");
             }
             final CustomFlightAssetDescriptor asset = modelMapper.fromBytes(descriptor.getCommand(), CustomFlightAssetDescriptor.class);
+
             try (Connector<?, ?> connector
-                    = connectorFactory.createConnector(asset.getDatasourceTypeName(), asset.getConnectionProperties())) {
+                         = connectorFactory.createConnector(asset.getDatasourceTypeName(), asset.getConnectionProperties())) {
                 connector.connect();
                 try (SourceInteraction<?> interaction = connector.getSourceInteraction(asset, ticket)) {
                     final Schema schema = interaction.getSchema();
@@ -151,28 +166,17 @@ public abstract class ConnectorFlightProducer implements FlightProducer
                         final VectorLoader loader = new VectorLoader(vectorSchemaRoot);
                         listener.start(vectorSchemaRoot);
                         interaction.beginStream(rootAllocator);
-                        while (interaction.hasNextBatch()) {
-                            try (VectorSchemaRoot batch = interaction.nextBatch()) {
-                                if (batch.getRowCount() == 0) {
-                                    break;
-                                }
-                                final VectorUnloader unloader = new VectorUnloader(batch);
-                                loader.load(unloader.getRecordBatch());
-                            }
-                            WaitResult wr;
-                            while ((wr = bpStrategy.waitForListener(5000)) == WaitResult.TIMEOUT) {
-                                LOGGER.info("Waiting for ready from client");
-                            }
-                            if (wr == WaitResult.CANCELLED) {
-                                break;
-                            }
-                            listener.putNext();
-                            vectorSchemaRoot.clear();
+                        if (asset.isMock()) {
+                            mockedInteraction(interaction, vectorSchemaRoot, listener, loader, asset, bpStrategy);
+                        } else {
+                            sourceInteraction(interaction, vectorSchemaRoot, listener, loader, bpStrategy);
                         }
+
                         if (listener.isCancelled()) {
                             LOGGER.info("Stream has been cancelled");
                             listener.error(CallStatus.CANCELLED.withDescription("Stream cancelled.").toRuntimeException());
                         } else {
+                            LOGGER.info("Listener completed.");
                             listener.completed();
                         }
                     }
@@ -184,6 +188,83 @@ public abstract class ConnectorFlightProducer implements FlightProducer
             listener.error(CallStatus.INVALID_ARGUMENT.withDescription(e.getMessage()).withCause(e).toRuntimeException());
         }
     }
+
+    private void mockedInteraction(SourceInteraction<?> interaction, VectorSchemaRoot vectorSchemaRoot, ServerStreamListener listener, VectorLoader loader, CustomFlightAssetDescriptor asset, BackpressureStrategy bpStrategy) throws Exception {
+        int currRep = 0;
+        double duration = 0;
+        while (currRep < getBatchRep(asset)) {
+
+            currRep += 1;
+            if (batchSize != getBatchSize(asset)) {
+                batchSize = getBatchSize(asset);
+                if (batch != null) {
+                    batch.close();
+                    batch = null;
+                }
+            }
+            if (batch == null) {
+                batch = interaction.nextBatch();
+            }
+
+            if (batch.getRowCount() == 0) {
+                break;
+            }
+
+            final VectorUnloader unloader = new VectorUnloader(batch);
+
+            try (ArrowRecordBatch arrowRecordBatch = unloader.getRecordBatch()) {
+                loader.load(arrowRecordBatch);
+            }
+
+            WaitResult wr;
+            while ((wr = bpStrategy.waitForListener(5000)) == WaitResult.TIMEOUT) {
+                LOGGER.info("Waiting for ready from client");
+            }
+            if (wr == WaitResult.CANCELLED) {
+                LOGGER.info("Wait result cancelled.");
+                break;
+            }
+            final long startTime = System.nanoTime();
+            listener.putNext();
+            final long endTime = System.nanoTime();
+            duration += ((endTime - startTime) / 1_000_000_000.0);
+            vectorSchemaRoot.clear();
+        }
+        LOGGER.info("Listener duration (mock): {}", duration);
+    }
+
+    private void sourceInteraction(SourceInteraction<?> interaction, VectorSchemaRoot vectorSchemaRoot, ServerStreamListener listener, VectorLoader loader, BackpressureStrategy bpStrategy) throws Exception {
+        double duration = 0;
+        while (interaction.hasNextBatch()) {
+            try (VectorSchemaRoot batch = interaction.nextBatch()) {
+                if (batch.getRowCount() == 0) {
+                    break;
+                }
+                final VectorUnloader unloader = new VectorUnloader(batch);
+                try (ArrowRecordBatch arrowRecordBatch = unloader.getRecordBatch()) {
+                    loader.load(arrowRecordBatch);
+                }
+            }
+
+            WaitResult wr;
+            while ((wr = bpStrategy.waitForListener(5000)) == WaitResult.TIMEOUT) {
+                LOGGER.info("Waiting for ready from client");
+            }
+            if (wr == WaitResult.CANCELLED) {
+                LOGGER.info("Wait result cancelled.");
+                break;
+            }
+            final long startTime = System.nanoTime();
+            listener.putNext();
+            final long endTime = System.nanoTime();
+            duration += ((endTime - startTime) / 1_000_000_000.0);
+            vectorSchemaRoot.clear();
+        }
+        LOGGER.info("Listener duration (normal): {}", duration);
+    }
+
+
+
 
     /**
      * {@inheritDoc}
@@ -431,6 +512,17 @@ public abstract class ConnectorFlightProducer implements FlightProducer
             LOGGER.error(e.getMessage(), e);
             listener.onError(CallStatus.INVALID_ARGUMENT.withDescription(e.getMessage()).withCause(e).toRuntimeException());
         }
+    }
+
+
+    private int getBatchRep(CustomFlightAssetDescriptor asset)
+    {
+        return asset.getBatchRep() != null ? asset.getBatchRep() : 1;
+    }
+
+    private int getBatchSize(CustomFlightAssetDescriptor asset)
+    {
+        return asset.getBatchSize() != null ? asset.getBatchSize() : 1024;
     }
 
 }

@@ -286,7 +286,7 @@ public abstract class JdbcSourceInteraction implements SourceInteraction<Connect
         }
         resultSet = partitioningStatement != null ? partitioningStatement.executeQuery() : statement.executeQuery();
         if (connector.supportsScrollableCursors()) {
-            final JdbcToArrowConfig config = new JdbcToArrowConfigBuilder().setAllocator(allocator)
+            final JdbcToArrowConfig config = new JdbcToArrowConfigBuilder().setAllocator(allocator) //.setReuseVectorSchemaRoot(true)
                     .setCalendar(JdbcToArrowUtils.getUtcCalendar()).setTargetBatchSize(getBatchSize())
                     .setJdbcToArrowTypeConverter(connector.getJdbcToArrowTypeConverter()).build();
             iterator = JdbcToArrow.sqlToArrowVectorIterator(resultSet, config);

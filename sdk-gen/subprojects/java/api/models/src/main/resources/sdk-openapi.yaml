@@ -152,6 +152,9 @@ components:
         id:
           type: string
           description: An ID for the asset.
+        mock:
+          type: boolean
+          description: Whether to continuously return one mocked batch.
         asset_type:
           $ref: '#/components/schemas/DiscoveredAssetType'
         name:
@@ -191,6 +194,9 @@ components:
           $ref: '#/components/schemas/ConnectionProperties'
         batch_size:
           description: The batch size.
+          type: integer
+        batch_rep:
+          description: The batch repetitions.
           type: integer
         partition_count:
           description: The partition count.
